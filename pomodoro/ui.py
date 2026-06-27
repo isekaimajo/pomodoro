@@ -1,7 +1,9 @@
 """Tkinter UI for the Pomodoro timer."""
 
+from __future__ import annotations
+
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import ttk
 import winsound
 
 from .timer import PomodoroTimer, State
@@ -20,13 +22,18 @@ BTN_ACTIVE = "#4a4a60"
 
 
 class PomodoroUI:
-    def __init__(self, root: tk.Tk, timer: PomodoroTimer, config: dict | None = None):
+    def __init__(self, root: tk.Tk, timer: PomodoroTimer, config: dict | None = None,
+                 persist_config: callable | None = None):
         self.root = root
         self.timer = timer
         self.config = config or {}
+        self._persist_config = persist_config
         self._after_id = None
         self._tray_window = None
+        self._tray_label = None
         self._settings_window = None
+        self._style = None
+        self.dot_labels = []
 
         self._setup_window()
         self._build_ui()
@@ -80,6 +87,13 @@ class PomodoroUI:
         self.countdown_label.pack(pady=(0, 10))
 
         # --- progress bar ---
+        self._style = ttk.Style()
+        self._style.theme_use("clam")
+        self._style.configure(
+            "Pomodoro.Horizontal.TProgressbar",
+            background=ACCENT_RED, troughcolor=PROGRESS_BG,
+            borderwidth=0, lightcolor=ACCENT_RED, darkcolor=ACCENT_RED,
+        )
         self.progress = ttk.Progressbar(
             self.root, orient="horizontal", length=280, mode="determinate",
             style="Pomodoro.Horizontal.TProgressbar",
@@ -89,37 +103,27 @@ class PomodoroUI:
         # --- tomato dots ---
         self.dots_frame = tk.Frame(self.root, bg=BG)
         self.dots_frame.pack(pady=(0, 15))
+        self._build_dot_labels()
 
         # --- control buttons ---
         btn_frame = tk.Frame(self.root, bg=BG)
         btn_frame.pack(pady=(0, 10))
 
-        self.start_btn = tk.Button(
-            btn_frame, text="▶  开始", font=("Segoe UI", 11),
-            bg=ACCENT_RED, fg="#fff", activebackground="#c0392b",
-            activeforeground="#fff", relief="flat", padx=18, pady=6,
-            cursor="hand2", borderwidth=0,
-            command=self._on_start,
+        self.start_btn = self._create_button(
+            btn_frame, "▶  开始", self._on_start, accent=True,
         )
-        self.start_btn.pack(side="left", padx=4)
 
-        self.pause_btn = tk.Button(
-            btn_frame, text="⏸  暂停", font=("Segoe UI", 11),
-            bg=BTN_BG, fg=TEXT, activebackground=BTN_ACTIVE,
-            activeforeground=TEXT, relief="flat", padx=18, pady=6,
-            cursor="hand2", borderwidth=0,
-            command=self._on_pause,
+        self.pause_btn = self._create_button(
+            btn_frame, "⏸  暂停", self._on_pause,
         )
-        self.pause_btn.pack(side="left", padx=4)
 
-        self.reset_btn = tk.Button(
-            btn_frame, text="↺  重置", font=("Segoe UI", 11),
-            bg=BTN_BG, fg=TEXT, activebackground=BTN_ACTIVE,
-            activeforeground=TEXT, relief="flat", padx=18, pady=6,
-            cursor="hand2", borderwidth=0,
-            command=self._on_reset,
+        self.reset_btn = self._create_button(
+            btn_frame, "↺  重置", self._on_reset,
         )
-        self.reset_btn.pack(side="left", padx=4)
+
+        self.skip_btn = self._create_button(
+            btn_frame, "⏭  跳过", self._on_skip,
+        )
 
         # --- stats ---
         self.stats_label = tk.Label(
@@ -149,14 +153,33 @@ class PomodoroUI:
         )
         settings_btn.pack(side="right")
 
-        # --- style the progress bar ---
-        style = ttk.Style()
-        style.theme_use("clam")
-        style.configure(
-            "Pomodoro.Horizontal.TProgressbar",
-            background=ACCENT_RED, troughcolor=PROGRESS_BG,
-            borderwidth=0, lightcolor=ACCENT_RED, darkcolor=ACCENT_RED,
+    def _create_button(self, parent, text, command, accent=False):
+        """Create a styled control button, pack it, and return it."""
+        bg = ACCENT_RED if accent else BTN_BG
+        abg = "#c0392b" if accent else BTN_ACTIVE
+        btn = tk.Button(
+            parent, text=text, font=("Segoe UI", 11),
+            bg=bg, fg="#fff" if accent else TEXT,
+            activebackground=abg, activeforeground="#fff" if accent else TEXT,
+            relief="flat", padx=14, pady=6,
+            cursor="hand2", borderwidth=0,
+            command=command,
         )
+        btn.pack(side="left", padx=4)
+        return btn
+
+    def _build_dot_labels(self):
+        """Create dot Label widgets once (reused by _refresh_dots)."""
+        for w in self.dots_frame.winfo_children():
+            w.destroy()
+        self.dot_labels.clear()
+        for _ in range(self.timer.long_break_interval):
+            lbl = tk.Label(
+                self.dots_frame, font=("Segoe UI", 18),
+                bg=BG,
+            )
+            lbl.pack(side="left", padx=4)
+            self.dot_labels.append(lbl)
 
     # ================================================================
     # Callbacks from timer
@@ -188,10 +211,7 @@ class PomodoroUI:
     # Button actions
     # ================================================================
     def _on_start(self):
-        if self.timer.is_idle:
-            self.timer.start()
-            self._start_ticking()
-        elif self.timer.is_paused:
+        if self.timer.is_idle or self.timer.is_paused:
             self.timer.start()
             self._start_ticking()
         self._refresh()
@@ -205,6 +225,14 @@ class PomodoroUI:
         self.timer.reset()
         self._stop_ticking()
         self._refresh()
+
+    def _on_skip(self):
+        """Skip the current session and advance to the next state."""
+        if self.timer.is_running:
+            self.timer.skip()
+            self._refresh()
+            if self.timer.is_running:
+                self._start_ticking()
 
     # ================================================================
     # Tick loop
@@ -252,13 +280,12 @@ class PomodoroUI:
         # progress bar
         self.progress["value"] = t.progress * 100
 
-        # progress bar color by state
-        style = ttk.Style()
+        # progress bar color by state (reuse stored style instance)
         if t.is_break:
             color = ACCENT_GREEN
         else:
             color = ACCENT_RED
-        style.configure("Pomodoro.Horizontal.TProgressbar", background=color)
+        self._style.configure("Pomodoro.Horizontal.TProgressbar", background=color)
 
         # tomato dots
         self._refresh_dots()
@@ -274,25 +301,23 @@ class PomodoroUI:
         # stats
         self.stats_label.config(text=f"总完成: {t.total_pomodoros} 个番茄")
 
-        # update tray if visible
-        if self._tray_window and self._tray_window.winfo_exists():
-            self._tray_window.title(f"{t.minutes:02d}:{t.seconds:02d}")
+        # update tray label if visible
+        if self._tray_window and self._tray_window.winfo_exists() and self._tray_label:
+            self._tray_label.config(text=f"🍅 {t.minutes:02d}:{t.seconds:02d}")
 
     def _refresh_dots(self):
-        for w in self.dots_frame.winfo_children():
-            w.destroy()
-
         interval = self.timer.long_break_interval
         completed = self.timer.session
 
-        for i in range(interval):
-            char = "🍅" if i < completed else "○"
-            color = ACCENT_RED if i < completed else "#6c7086"
-            lbl = tk.Label(
-                self.dots_frame, text=char, font=("Segoe UI", 18),
-                bg=BG, fg=color,
-            )
-            lbl.pack(side="left", padx=4)
+        # Rebuild labels if interval changed (e.g. after settings save)
+        if len(self.dot_labels) != interval:
+            self._build_dot_labels()
+
+        for i, lbl in enumerate(self.dot_labels):
+            if i < completed:
+                lbl.config(text="🍅", fg=ACCENT_RED)
+            else:
+                lbl.config(text="○", fg="#6c7086")
 
     # ================================================================
     # Always on top
@@ -322,56 +347,23 @@ class PomodoroUI:
         py = self.root.winfo_y() + (self.root.winfo_height() - 260) // 2
         self._settings_window.geometry(f"+{px}+{py}")
 
-        pad = {"padx": 15, "pady": 5}
-
         tk.Label(
             self._settings_window, text="设置", font=("Segoe UI", 14, "bold"),
             fg=TEXT, bg=SURFACE,
         ).pack(pady=(15, 10))
 
-        # focus
-        f1 = tk.Frame(self._settings_window, bg=SURFACE)
-        f1.pack(fill="x", **pad)
-        tk.Label(f1, text="专注时长 (分钟)", fg=TEXT, bg=SURFACE, font=("Segoe UI", 10)).pack(side="left")
+        # setting rows
         focus_var = tk.IntVar(value=self.timer.focus_minutes)
-        tk.Spinbox(
-            f1, from_=1, to=120, textvariable=focus_var, width=5,
-            font=("Segoe UI", 10), bg=SURFACE, fg=TEXT,
-            buttonbackground=BTN_BG, justify="center",
-        ).pack(side="right")
+        self._add_setting_row(self._settings_window, "专注时长 (分钟)", focus_var, 1, 120)
 
-        # short break
-        f2 = tk.Frame(self._settings_window, bg=SURFACE)
-        f2.pack(fill="x", **pad)
-        tk.Label(f2, text="短休息时长 (分钟)", fg=TEXT, bg=SURFACE, font=("Segoe UI", 10)).pack(side="left")
         short_var = tk.IntVar(value=self.timer.short_break_minutes)
-        tk.Spinbox(
-            f2, from_=1, to=60, textvariable=short_var, width=5,
-            font=("Segoe UI", 10), bg=SURFACE, fg=TEXT,
-            buttonbackground=BTN_BG, justify="center",
-        ).pack(side="right")
+        self._add_setting_row(self._settings_window, "短休息时长 (分钟)", short_var, 1, 60)
 
-        # long break
-        f3 = tk.Frame(self._settings_window, bg=SURFACE)
-        f3.pack(fill="x", **pad)
-        tk.Label(f3, text="长休息时长 (分钟)", fg=TEXT, bg=SURFACE, font=("Segoe UI", 10)).pack(side="left")
         long_var = tk.IntVar(value=self.timer.long_break_minutes)
-        tk.Spinbox(
-            f3, from_=1, to=120, textvariable=long_var, width=5,
-            font=("Segoe UI", 10), bg=SURFACE, fg=TEXT,
-            buttonbackground=BTN_BG, justify="center",
-        ).pack(side="right")
+        self._add_setting_row(self._settings_window, "长休息时长 (分钟)", long_var, 1, 120)
 
-        # interval
-        f4 = tk.Frame(self._settings_window, bg=SURFACE)
-        f4.pack(fill="x", **pad)
-        tk.Label(f4, text="长休息间隔 (轮)", fg=TEXT, bg=SURFACE, font=("Segoe UI", 10)).pack(side="left")
         interval_var = tk.IntVar(value=self.timer.long_break_interval)
-        tk.Spinbox(
-            f4, from_=1, to=10, textvariable=interval_var, width=5,
-            font=("Segoe UI", 10), bg=SURFACE, fg=TEXT,
-            buttonbackground=BTN_BG, justify="center",
-        ).pack(side="right")
+        self._add_setting_row(self._settings_window, "长休息间隔 (轮)", interval_var, 1, 10)
 
         # save button
         def _save():
@@ -383,6 +375,8 @@ class PomodoroUI:
             self._stop_ticking()
             self._refresh()
             self._save_config()
+            if self._persist_config:
+                self._persist_config(self.config)
             self._settings_window.destroy()
             self._settings_window = None
 
@@ -393,9 +387,24 @@ class PomodoroUI:
             cursor="hand2", borderwidth=0, command=_save,
         ).pack(pady=(15, 10))
 
-        self._settings_window.protocol("WM_DELETE_WINDOW", lambda: (
-            self._settings_window.destroy(), setattr(self, "_settings_window", None)
-        ))
+        def _on_settings_close():
+            self._settings_window.destroy()
+            self._settings_window = None
+
+        self._settings_window.protocol("WM_DELETE_WINDOW", _on_settings_close)
+
+    def _add_setting_row(self, parent, label_text, variable, from_, to):
+        """Create a single Label + Spinbox row for the settings dialog."""
+        frame = tk.Frame(parent, bg=SURFACE)
+        frame.pack(fill="x", padx=15, pady=5)
+        tk.Label(
+            frame, text=label_text, fg=TEXT, bg=SURFACE, font=("Segoe UI", 10),
+        ).pack(side="left")
+        tk.Spinbox(
+            frame, from_=from_, to=to, textvariable=variable, width=5,
+            font=("Segoe UI", 10), bg=SURFACE, fg=TEXT,
+            buttonbackground=BTN_BG, justify="center",
+        ).pack(side="right")
 
     # ================================================================
     # Config persistence
@@ -445,15 +454,16 @@ class PomodoroUI:
         ))
 
         t = self.timer
-        lbl = tk.Label(
+        self._tray_label = tk.Label(
             self._tray_window,
             text=f"🍅 {t.minutes:02d}:{t.seconds:02d}",
             font=("Consolas", 12, "bold"), fg=ACCENT_RED, bg=SURFACE,
         )
-        lbl.pack(expand=True)
+        self._tray_label.pack(expand=True)
 
         # click to restore
         def _restore(_event=None):
+            self._tray_label = None
             self._tray_window.destroy()
             self._tray_window = None
             self.root.deiconify()
@@ -461,7 +471,14 @@ class PomodoroUI:
             self.root.focus_force()
 
         self._tray_window.bind("<Button-1>", _restore)
-        lbl.bind("<Button-1>", _restore)
+        self._tray_label.bind("<Button-1>", _restore)
+
+        # belt-and-suspenders: handle external tray destruction
+        def _on_tray_destroy():
+            self._tray_label = None
+            self._tray_window = None
+
+        self._tray_window.protocol("WM_DELETE_WINDOW", _on_tray_destroy)
 
         # right-click menu
         menu = tk.Menu(self._tray_window, tearoff=0, bg=SURFACE, fg=TEXT)
@@ -473,11 +490,14 @@ class PomodoroUI:
             menu.post(event.x_root, event.y_root)
 
         self._tray_window.bind("<Button-3>", _right_click)
-        lbl.bind("<Button-3>", _right_click)
+        self._tray_label.bind("<Button-3>", _right_click)
 
     def _quit_app(self):
         self._stop_ticking()
+        if self._persist_config:
+            self._persist_config(self.config)
         if self._tray_window:
             self._tray_window.destroy()
             self._tray_window = None
+            self._tray_label = None
         self.root.destroy()

@@ -19,7 +19,6 @@ class PomodoroTimer:
         self.duration = 0
         self.session = 0  # completed focus sessions in current cycle (0-3)
         self.total_pomodoros = 0
-        self.ticking = False
 
         # configurable durations (seconds)
         self.focus_minutes = 25

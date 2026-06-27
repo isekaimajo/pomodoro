@@ -8,7 +8,6 @@ Run:
 
 import json
 import os
-import sys
 import tkinter as tk
 
 from pomodoro.timer import PomodoroTimer
@@ -38,23 +37,9 @@ def main():
 
     root = tk.Tk()
     timer = PomodoroTimer()
-    ui = PomodoroUI(root, timer, config)
-
-    def on_quit():
-        save_config(ui.get_config())
-        root.destroy()
+    ui = PomodoroUI(root, timer, config, persist_config=save_config)
 
     root.protocol("WM_DELETE_WINDOW", ui._on_close)
-
-    # Save config on exit even if user closes via tray quit
-    orig_quit = ui._quit_app
-
-    def _quit_with_save():
-        save_config(ui.get_config())
-        orig_quit()
-
-    ui._quit_app = _quit_with_save
-
     root.mainloop()
 
 
